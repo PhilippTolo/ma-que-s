@@ -263,7 +263,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset-name", default=DATASET_NAME)
     parser.add_argument("--lang", default="en", choices=["en", "zh"],
-                        help="Language version of SafetyBench")
+                        help="Unused — kept for backwards compat")
     parser.add_argument("--output-dir", default="./processed")
     parser.add_argument("--val-frac", type=float, default=0.1,
                         help="Fraction of data reserved for validation")
@@ -280,19 +280,25 @@ def main():
     print(f"\n{'='*60}")
     print(f"  SafetyBench data preparation")
     print(f"  Dataset : {args.dataset_name}")
-    print(f"  Language: {args.lang}")
+    print(f"  Configs  : test + dev")
     print(f"  Rationale: {add_rationale}")
     print(f"{'='*60}\n")
 
     # ── Load dataset ──────────────────────────────────────────────────────────
+    # SafetyBench exposes configs 'test' and 'dev' (not language splits).
+    # Load both and pool them — we create our own train/val split below.
     print(f"[1/4] Downloading {args.dataset_name} ...")
-    try:
-        ds = load_dataset(args.dataset_name, args.lang)
-    except Exception:
-        # Fallback: try without language specifier
-        print(f"  Retry without language split...")
-        ds = load_dataset(args.dataset_name)
-
+    all_splits = {}
+    for config in ("test", "dev"):
+        try:
+            split_ds = load_dataset(args.dataset_name, config)
+            for k, v in split_ds.items():
+                all_splits[f"{config}_{k}"] = v
+        except Exception as e:
+            print(f"  Warning: could not load config '{config}': {e}")
+    if not all_splits:
+        raise RuntimeError("Failed to load any split from SafetyBench.")
+    ds = all_splits
     print(f"  Available splits: {list(ds.keys())}")
     print(f"  Columns: {ds[list(ds.keys())[0]].column_names}")
 
