@@ -9,10 +9,13 @@
 set -euo pipefail
 
 PKG_DIR="/scratch/py_packages"
-REQ="$(dirname "$0")/shared/requirements.txt"
 
 echo "[setup] Installing packages to $PKG_DIR ..."
-pip install -r "$REQ" --target="$PKG_DIR" --upgrade
+# trl and peft depend on torch/transformers already in the image;
+# --no-deps avoids pip trying to re-download them to the custom target.
+pip install trl peft --no-deps --target="$PKG_DIR" --upgrade
+# wandb has no torch dependency so install normally.
+pip install wandb --target="$PKG_DIR" --upgrade
 
 cat > /scratch/activate_env.sh << 'EOF'
 #!/bin/bash
