@@ -1,28 +1,34 @@
 """
-Phase 3 — Prepare PKU-SafeRLHF for GRPO training.
+Prepare PKU-SafeRLHF for SFT or GRPO training.
 
 PKU-SafeRLHF (Dai et al., 2023): preference pairs with safety labels.
 HuggingFace: PKU-Alignment/PKU-SafeRLHF
 
-Strategy from proposal: reformat preference pairs as binary safe/unsafe MCQs.
+Strategy: reformat preference pairs as binary safe/unsafe MCQs.
 For each pair we know which response is safer (from is_response_X_safe labels).
-The GRPO reward function then checks if the model's \\boxed{} answer matches.
 
-Output schema (one JSON object per line):
+--mode sft  Output schema (for sft_train.py):
     {
-        "prompt": "<chat-formatted prompt asking 'which is safer?'>",
-        "gold_answer": "A",     # letter of the safer response
-        "response_a": "...",    # truncated for token budget
+        "messages": [
+            {"role": "system",    "content": "..."},
+            {"role": "user",      "content": "<MCQ prompt>"},
+            {"role": "assistant", "content": "Response A is safer.\\n\\n\\boxed{A}"}
+        ],
+        "answer": "A"
+    }
+
+--mode grpo  Output schema (legacy, for grpo_train.py):
+    {
+        "prompt": "...",
+        "gold_answer": "A",
+        "response_a": "...",
         "response_b": "...",
         "original_prompt": "..."
     }
 
-The GRPO trainer calls a reward_fn(completions, gold_answers) that returns
-per-sample scalar rewards — see grpo_train.py.
-
 Usage:
-    python prepare_pkusaferlhf.py --output-dir ./processed
-    python prepare_pkusaferlhf.py --output-dir ./processed --max-resp-tokens 200
+    python prepare_pkusaferlhf.py --output-dir ./processed --mode sft
+    python prepare_pkusaferlhf.py --output-dir ./processed --mode grpo
 """
 
 import argparse
@@ -135,6 +141,25 @@ def process_dataset(rows: list[dict], max_resp_chars: int) -> list[dict]:
     return examples
 
 
+def to_sft_format(examples: list[dict]) -> list[dict]:
+    """Convert GRPO-format examples to SFT messages format for sft_train.py."""
+    sft_examples = []
+    for ex in examples:
+        gold = ex["gold_answer"]
+        assistant_content = f"Response {gold} is safer.\n\n\\boxed{{{gold}}}"
+        sft_examples.append(
+            {
+                "messages": [
+                    {"role": "system",    "content": SYSTEM_PROMPT},
+                    {"role": "user",      "content": ex["prompt"]},
+                    {"role": "assistant", "content": assistant_content},
+                ],
+                "answer": gold,
+            }
+        )
+    return sft_examples
+
+
 def save_jsonl(data: list[dict], path: str) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
@@ -153,12 +178,14 @@ def main():
                         help="Truncate response text to this many characters")
     parser.add_argument("--max-samples", type=int, default=20_000,
                         help="Cap total pairs (PKU-SafeRLHF is large; 20k is plenty)")
+    parser.add_argument("--mode", default="sft", choices=["sft", "grpo"],
+                        help="Output format: 'sft' for sft_train.py, 'grpo' for grpo_train.py")
     args = parser.parse_args()
 
     random.seed(args.seed)
 
     print(f"\n{'='*60}")
-    print(f"  PKU-SafeRLHF data preparation (GRPO)")
+    print(f"  PKU-SafeRLHF data preparation ({args.mode.upper()})")
     print(f"  Dataset     : {args.dataset_name}")
     print(f"  Max samples : {args.max_samples:,}")
     print(f"  Max resp chars: {args.max_resp_chars}")
@@ -204,17 +231,26 @@ def main():
     train = examples[n_val:]
     print(f"  Train: {len(train):,}   Val: {len(val):,}")
 
+    # ── Convert to target format ──────────────────────────────────────────────
+    if args.mode == "sft":
+        train = to_sft_format(train)
+        val   = to_sft_format(val)
+
     # ── Save ──────────────────────────────────────────────────────────────────
     print(f"\n[4/4] Saving...")
-    train_path = os.path.join(args.output_dir, "pkusafe_grpo_train.jsonl")
-    val_path = os.path.join(args.output_dir, "pkusafe_grpo_val.jsonl")
+    prefix = f"pkusafe_{args.mode}"
+    train_path = os.path.join(args.output_dir, f"{prefix}_train.jsonl")
+    val_path   = os.path.join(args.output_dir, f"{prefix}_val.jsonl")
     save_jsonl(train, train_path)
     save_jsonl(val, val_path)
 
     print(f"\nDone.")
-    print(f"  GRPO Train : {train_path}")
-    print(f"  GRPO Val   : {val_path}")
-    print(f"\nNext step: python ../training/grpo_train.py --train {train_path} --val {val_path}")
+    print(f"  {args.mode.upper()} Train : {train_path}")
+    print(f"  {args.mode.upper()} Val   : {val_path}")
+    if args.mode == "sft":
+        print(f"\nNext step: python ../training/sft_train.py --train {train_path} --val {val_path}")
+    else:
+        print(f"\nNext step: python ../training/grpo_train.py --train {train_path} --val {val_path}")
 
 
 if __name__ == "__main__":
