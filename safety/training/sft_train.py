@@ -36,6 +36,7 @@ from transformers import (
 )
 from trl import SFTConfig, SFTTrainer
 
+import sys; sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 from safety.utils import extract_boxed
 
 # ── Default LoRA targets for Qwen3 ────────────────────────────────────────────

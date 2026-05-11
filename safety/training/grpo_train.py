@@ -36,6 +36,7 @@ from peft import LoraConfig, TaskType, get_peft_model
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from trl import GRPOConfig, GRPOTrainer
 
+import sys; sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 from safety.utils import extract_boxed
 
 # Must match the system prompt used in prepare_pkusaferlhf.py

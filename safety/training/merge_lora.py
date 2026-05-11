@@ -28,6 +28,7 @@ import torch
 from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
 
+import sys; sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 from safety.constants import REQUIRED_GEN_CONFIG
 
 
