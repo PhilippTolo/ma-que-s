@@ -35,3 +35,23 @@ elif sum(1 for l in labels if l != -100) == 0:
     print("ERROR: zero non-masked tokens — label masking is broken")
 else:
     print("OK: label masking looks correct")
+
+# ── Direct model loss test ────────────────────────────────────────────────────
+print("\n--- Direct model loss test ---")
+import torch
+from transformers import AutoModelForCausalLM
+
+model = AutoModelForCausalLM.from_pretrained(
+    "Qwen/Qwen3-1.7B", trust_remote_code=True,
+    torch_dtype=torch.bfloat16, attn_implementation="sdpa"
+).cuda()
+
+input_ids_t = torch.tensor([full_ids]).cuda()
+labels_t    = torch.tensor([labels]).cuda()
+
+with torch.no_grad():
+    out = model(input_ids=input_ids_t, labels=labels_t)
+
+print("Model loss :", out.loss.item())
+print("Is NaN     :", torch.isnan(out.loss).item())
+print("Is Inf     :", torch.isinf(out.loss).item())
