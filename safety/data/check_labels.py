@@ -43,7 +43,7 @@ from transformers import AutoModelForCausalLM
 
 model = AutoModelForCausalLM.from_pretrained(
     "Qwen/Qwen3-1.7B", trust_remote_code=True,
-    torch_dtype=torch.bfloat16, attn_implementation="sdpa"
+    torch_dtype=torch.bfloat16, attn_implementation="eager"
 ).cuda()
 
 input_ids_t = torch.tensor([full_ids]).cuda()
