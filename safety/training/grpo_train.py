@@ -281,6 +281,17 @@ def main():
     tokenizer.padding_side = "left"
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+
+    # Patch chat_template to force enable_thinking=False.
+    # Without this, Qwen3's template injects <think>\n before the assistant turn
+    # during GRPOTrainer's internal apply_chat_template calls, causing the model to
+    # generate a full 256-token thinking chain instead of \boxed{A}/\boxed{B} →
+    # reward=0 for every completion → reward_std=0 → GRPO advantage=0 → no learning.
+    _THINKING_OVERRIDE = "{%- set enable_thinking = false %}"
+    if tokenizer.chat_template and _THINKING_OVERRIDE not in tokenizer.chat_template:
+        tokenizer.chat_template = _THINKING_OVERRIDE + "\n" + tokenizer.chat_template
+        print("  Patched chat_template: enable_thinking=false")
+
     print(f"  Vocab size: {tokenizer.vocab_size:,}  |  padding_side: {tokenizer.padding_side}")
 
     # ── 2. Data ───────────────────────────────────────────────────────────────
