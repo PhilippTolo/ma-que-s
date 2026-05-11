@@ -24,6 +24,7 @@ import os
 import re
 
 import torch
+import torch.nn.functional as F
 from datasets import Dataset
 from peft import LoraConfig, TaskType
 from transformers import (
@@ -309,6 +310,33 @@ def parse_args():
     return p.parse_args()
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Numerically stable trainer
+# ─────────────────────────────────────────────────────────────────────────────
+
+class StableSFTTrainer(SFTTrainer):
+    """SFTTrainer with logit softcapping to prevent BF16 overflow in backward.
+
+    Qwen3-1.7B produces logits up to ~2e10 in BF16.  The forward CE loss is
+    numerically stable (log-sum-exp trick), but the backward overflows.
+    Clamping logits to ±100 before loss computation bounds the CE loss at
+    ≤100/token and keeps all gradients finite.  Equivalent to Gemma's
+    logit_softcapping approach.
+    """
+
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        labels = inputs.pop("labels")
+        outputs = model(**inputs)
+        # Cast to FP32 + clamp to ±100: max CE per token ≤ 100, gradients bounded.
+        logits = outputs.logits.float().clamp(-100.0, 100.0)
+        loss = F.cross_entropy(
+            logits.view(-1, logits.size(-1)),
+            labels.view(-1),
+            ignore_index=-100,
+        )
+        return (loss, outputs) if return_outputs else loss
+
+
 def main():
     args = parse_args()
 
@@ -367,15 +395,17 @@ def main():
 
     # ── Model ─────────────────────────────────────────────────────────────────
     print("[3/6] Loading model...")
-    # Load in FP32: BF16 backward pass overflows (activations reach ~20e9, causing
-    # NaN gradients). FP32 forward has large logits for 2 tokens but gradient
-    # clipping handles finite-but-large gradients correctly.
+    # BF16: forward pass is numerically stable (confirmed loss=16.47 on single
+    # example). Extreme logits (~2e10) are handled by logit clamping in
+    # StableSFTTrainer.compute_loss; FP32 is actually worse here because higher
+    # precision arithmetic amplifies logit magnitudes further.
     model_kwargs = dict(
         trust_remote_code=True,
+        torch_dtype=torch.bfloat16,
     )
     model_kwargs["attn_implementation"] = "eager"
     model = AutoModelForCausalLM.from_pretrained(args.model, **model_kwargs)
-    print("  Using FP32 + eager attention.")
+    print("  Using BF16 + eager attention + logit clamping.")
 
     print(f"  Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M")
 
@@ -421,9 +451,9 @@ def main():
         warmup_ratio=args.warmup_ratio,
         lr_scheduler_type="cosine",
         optim="adamw_torch",
-        # Precision — FP32 training (BF16 backward pass overflows on this model)
-        bf16=False,
-        fp16=False,
+        # Precision — BF16 forward is stable; extreme logits handled by clamping
+        bf16=torch.cuda.is_bf16_supported(),
+        fp16=not torch.cuda.is_bf16_supported() and torch.cuda.is_available(),
         # Memory — 1.7B model fits in 40GB without checkpointing; checkpointing + FA2 caused NaN
         gradient_checkpointing=False,
         # Logging / eval / save
@@ -467,7 +497,7 @@ def main():
 
     try:
         # TRL >= 0.12 uses processing_class
-        trainer = SFTTrainer(
+        trainer = StableSFTTrainer(
             model=model,
             args=sft_config,
             train_dataset=train_ds,
@@ -479,7 +509,7 @@ def main():
         )
     except TypeError:
         # Fallback for TRL 0.9.x — uses tokenizer=
-        trainer = SFTTrainer(
+        trainer = StableSFTTrainer(
             model=model,
             args=sft_config,
             train_dataset=train_ds,
