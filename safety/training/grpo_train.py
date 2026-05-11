@@ -113,7 +113,17 @@ def safety_reward(completions: list[str], **kwargs) -> list[float]:
     rewards = []
 
     for completion, gold in zip(completions, gold_answers):
-        extracted = extract_boxed(completion)
+        # TRL >= 1.0 passes completions as lists of message dicts;
+        # older TRL passes plain strings. Handle both.
+        if isinstance(completion, list):
+            text = "".join(
+                msg.get("content", "") if isinstance(msg, dict) else str(msg)
+                for msg in completion
+            )
+        else:
+            text = completion
+
+        extracted = extract_boxed(text)
 
         r_format   = 1.0 if extracted in ("A", "B") else 0.0
         r_accuracy = 1.0 if (extracted is not None and extracted == str(gold).upper()) else 0.0
