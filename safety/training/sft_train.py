@@ -367,14 +367,15 @@ def main():
 
     # ── Model ─────────────────────────────────────────────────────────────────
     print("[3/6] Loading model...")
+    # Load in FP32: BF16 backward pass overflows (activations reach ~20e9, causing
+    # NaN gradients). FP32 forward has large logits for 2 tokens but gradient
+    # clipping handles finite-but-large gradients correctly.
     model_kwargs = dict(
         trust_remote_code=True,
-        dtype=torch.bfloat16,
     )
-    # SDPA is stable in BF16; Flash Attention 2 produces NaN gradients here
-    model_kwargs["attn_implementation"] = "sdpa"
+    model_kwargs["attn_implementation"] = "eager"
     model = AutoModelForCausalLM.from_pretrained(args.model, **model_kwargs)
-    print("  Using SDPA attention.")
+    print("  Using FP32 + eager attention.")
 
     print(f"  Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M")
 
@@ -420,9 +421,9 @@ def main():
         warmup_ratio=args.warmup_ratio,
         lr_scheduler_type="cosine",
         optim="adamw_torch",
-        # Precision
-        bf16=torch.cuda.is_bf16_supported(),
-        fp16=not torch.cuda.is_bf16_supported() and torch.cuda.is_available(),
+        # Precision — FP32 training (BF16 backward pass overflows on this model)
+        bf16=False,
+        fp16=False,
         # Memory — 1.7B model fits in 40GB without checkpointing; checkpointing + FA2 caused NaN
         gradient_checkpointing=False,
         # Logging / eval / save
