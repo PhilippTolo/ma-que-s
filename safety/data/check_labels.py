@@ -55,3 +55,20 @@ with torch.no_grad():
 print("Model loss :", out.loss.item())
 print("Is NaN     :", torch.isnan(out.loss).item())
 print("Is Inf     :", torch.isinf(out.loss).item())
+
+# Check logit range — overflow here explains impossible loss values
+logits = out.logits  # [1, seq_len, vocab_size]
+print(f"Logits dtype : {logits.dtype}")
+print(f"Logits max   : {logits.max().item():.2f}")
+print(f"Logits min   : {logits.min().item():.2f}")
+print(f"Logits NaN   : {torch.isnan(logits).any().item()}")
+print(f"Logits Inf   : {torch.isinf(logits).any().item()}")
+
+# Manual per-token cross-entropy to see exact values
+import torch.nn.functional as F
+logits_2d  = logits[0].float()           # [seq_len, vocab] in fp32
+labels_1d  = labels_t[0]                 # [seq_len]
+per_tok    = F.cross_entropy(logits_2d, labels_1d, ignore_index=-100, reduction="none")
+valid      = labels_1d != -100
+print(f"\nPer-token losses on response tokens: {per_tok[valid].tolist()}")
+print(f"Mean manual CE loss: {per_tok[valid].mean().item():.4f}")
