@@ -35,21 +35,34 @@ import torch
 from datasets import Dataset
 
 # bitsandbytes is not compiled for CUDA 12.8 and raises RuntimeError on import.
-# PEFT imports it unconditionally, but standard LoRA never calls any bitsandbytes
-# functions — so substituting a MagicMock is safe for our use case.
+# PEFT + TRL import it unconditionally, but standard LoRA never calls any bnb
+# functions — so mocking it is safe for our use case.
+# IMPORTANT: must use types.ModuleType with a real ModuleSpec, NOT MagicMock.
+# MagicMock().__spec__ raises AttributeError; importlib.util.find_spec (called
+# by TRL's lazy importer) converts that to ValueError("__spec__ is not set").
 if "bitsandbytes" not in sys.modules:
     try:
         import bitsandbytes  # noqa: F401
     except (RuntimeError, ImportError):
+        import types as _types
+        import importlib.machinery as _im
         from unittest.mock import MagicMock as _M
-        for _mod in (
+
+        def _bnb_mod(name: str):
+            m = _types.ModuleType(name)
+            m.__spec__ = _im.ModuleSpec(name, loader=None)
+            m.__version__ = "0.41.0"
+            m.__getattr__ = lambda attr: _M()
+            return m
+
+        for _mod_name in (
             "bitsandbytes", "bitsandbytes.nn", "bitsandbytes.optim",
             "bitsandbytes.functional", "bitsandbytes.cuda_setup",
             "bitsandbytes.autograd", "bitsandbytes.nn.modules",
             "bitsandbytes.utils",
         ):
-            sys.modules[_mod] = _M()
-        print("[bnb-mock] bitsandbytes unavailable; mocked so PEFT LoRA can load.")
+            sys.modules[_mod_name] = _bnb_mod(_mod_name)
+        print("[bnb-mock] bitsandbytes unavailable on CUDA 12.8; mocked for PEFT LoRA.")
 
 from peft import LoraConfig, TaskType, get_peft_model
 from transformers import AutoModelForCausalLM, AutoTokenizer
