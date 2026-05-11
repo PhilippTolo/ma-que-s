@@ -454,8 +454,11 @@ def main():
         # Precision — BF16 forward is stable; extreme logits handled by clamping
         bf16=torch.cuda.is_bf16_supported(),
         fp16=not torch.cuda.is_bf16_supported() and torch.cuda.is_available(),
-        # Memory — 1.7B model fits in 40GB without checkpointing; checkpointing + FA2 caused NaN
-        gradient_checkpointing=False,
+        # Memory — eager attn stores all activations; checkpointing is required for full dataset.
+        # Earlier NaN issue was with FA2+checkpointing, not eager. use_reentrant=False is safer
+        # with custom compute_loss overrides.
+        gradient_checkpointing=True,
+        gradient_checkpointing_kwargs={"use_reentrant": False},
         # Logging / eval / save
         logging_steps=args.logging_steps,
         eval_strategy="steps",
