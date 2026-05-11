@@ -293,15 +293,11 @@ def main():
 
     # ── 3. Model ──────────────────────────────────────────────────────────────
     print("[3/5] Loading SFT model...")
-    model_kwargs = dict(trust_remote_code=True, torch_dtype=torch.bfloat16)
-    try:
-        model_kwargs["attn_implementation"] = "flash_attention_2"
-        model = AutoModelForCausalLM.from_pretrained(args.sft_checkpoint, **model_kwargs)
-        print("  Using Flash Attention 2.")
-    except Exception:
-        model_kwargs.pop("attn_implementation", None)
-        model = AutoModelForCausalLM.from_pretrained(args.sft_checkpoint, **model_kwargs)
-        print("  Flash Attention 2 not available.")
+    # Force eager attention — FA2 produces NaN logits with Qwen3-1.7B in BF16,
+    # causing the generation probability tensor to contain inf/nan (same issue as SFT).
+    model_kwargs = dict(trust_remote_code=True, dtype=torch.bfloat16, attn_implementation="eager")
+    model = AutoModelForCausalLM.from_pretrained(args.sft_checkpoint, **model_kwargs)
+    print("  Using BF16 + eager attention (NaN-safe).")
     print(f"  Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M")
 
     # ── 4. LoRA ───────────────────────────────────────────────────────────────
@@ -340,8 +336,8 @@ def main():
         ref_model = AutoModelForCausalLM.from_pretrained(
             args.sft_checkpoint,
             trust_remote_code=True,
-            torch_dtype=torch.bfloat16,
-            attn_implementation=model_kwargs.get("attn_implementation", "eager"),
+            dtype=torch.bfloat16,
+            attn_implementation="eager",
         )
         ref_model.eval()
         for p in ref_model.parameters():
