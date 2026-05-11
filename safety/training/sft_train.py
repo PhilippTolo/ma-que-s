@@ -327,7 +327,7 @@ def main():
     sft_config = SFTConfig(
         output_dir=args.output_dir,
         # Sequence length
-        max_seq_length=args.max_seq_length,
+        max_length=args.max_seq_length,
         # Epochs / steps
         num_train_epochs=args.epochs,
         max_steps=max_steps,
