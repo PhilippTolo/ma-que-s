@@ -162,7 +162,7 @@ def build_grpo_config(args, max_steps: int) -> GRPOConfig:
         optim="adamw_torch",
         bf16=torch.cuda.is_bf16_supported(),
         fp16=not torch.cuda.is_bf16_supported() and torch.cuda.is_available(),
-        max_grad_norm=1.0,
+        max_grad_norm=0.3,
         gradient_checkpointing=True,
         logging_steps=args.logging_steps,
         save_strategy="steps",
@@ -322,15 +322,35 @@ def main():
     print("  Using BF16 + eager attention (NaN-safe).")
     print(f"  Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M")
 
-    # Clamp logits to ±100 on every lm_head forward pass — covers both training
-    # and model.generate() calls inside GRPOTrainer.  After ~300 full-FT gradient
-    # steps, BF16 weights drift enough to produce extreme logits (→ inf/nan in
-    # softmax sampling).  The hook is identical to StableSFTTrainer's approach
-    # but applied as a module hook so it fires inside TRL's generation loop too.
+    # Guard every transformer layer against NaN cascade.
+    # Key insight: torch.clamp(NaN) == NaN — clamping does NOT replace NaN.
+    # NaN can originate in any attention/MLP layer and propagate forward through
+    # the residual stream into lm_head, making logit-only clamping useless.
+    # Registering nan_to_num+clamp on every decoder layer output stops the cascade
+    # at its source.  Value bounds (-3e4, 3e4) are well within BF16 range but far
+    # above typical healthy activations (<100), so normal training is unaffected.
+    def _clamp_hidden(module, inp, out):
+        if isinstance(out, tuple):
+            h = out[0]
+            if isinstance(h, torch.Tensor):
+                h = h.nan_to_num(0.0).clamp(-3e4, 3e4)
+            return (h,) + out[1:]
+        if isinstance(out, torch.Tensor):
+            return out.nan_to_num(0.0).clamp(-3e4, 3e4)
+        return out
+
+    n_hooks = 0
+    for layer in model.model.layers:
+        layer.register_forward_hook(_clamp_hidden)
+        n_hooks += 1
+    print(f"  Registered NaN-guard on {n_hooks} transformer layers.")
+
+    # Also guard lm_head: nan_to_num first (clamp alone passes NaN through),
+    # then clamp logits to ±100 so softmax sampling always gets finite input.
     def _clamp_logits(module, inp, out):
-        return out.float().clamp(-100.0, 100.0).to(out.dtype)
+        return out.nan_to_num(0.0).clamp(-100.0, 100.0)
     model.lm_head.register_forward_hook(_clamp_logits)
-    print("  Registered logit-clamping hook on lm_head.")
+    print("  Registered NaN-guard + logit-clamp on lm_head.")
 
     # ── 4. LoRA ───────────────────────────────────────────────────────────────
     if args.no_lora:
