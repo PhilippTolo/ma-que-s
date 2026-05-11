@@ -263,7 +263,7 @@ def main():
     # ── 1. Tokenizer ──────────────────────────────────────────────────────────
     print("[1/5] Loading tokenizer from SFT checkpoint...")
     tokenizer = AutoTokenizer.from_pretrained(
-        args.sft_checkpoint, trust_remote_code=True
+        args.sft_checkpoint, trust_remote_code=True, local_files_only=True
     )
     # Left-padding is standard for generation-heavy training loops
     tokenizer.padding_side = "left"
