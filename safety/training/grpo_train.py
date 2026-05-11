@@ -322,6 +322,16 @@ def main():
     print("  Using BF16 + eager attention (NaN-safe).")
     print(f"  Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M")
 
+    # Clamp logits to ±100 on every lm_head forward pass — covers both training
+    # and model.generate() calls inside GRPOTrainer.  After ~300 full-FT gradient
+    # steps, BF16 weights drift enough to produce extreme logits (→ inf/nan in
+    # softmax sampling).  The hook is identical to StableSFTTrainer's approach
+    # but applied as a module hook so it fires inside TRL's generation loop too.
+    def _clamp_logits(module, inp, out):
+        return out.float().clamp(-100.0, 100.0).to(out.dtype)
+    model.lm_head.register_forward_hook(_clamp_logits)
+    print("  Registered logit-clamping hook on lm_head.")
+
     # ── 4. LoRA ───────────────────────────────────────────────────────────────
     if args.no_lora:
         print("[4/5] Skipping LoRA (full fine-tuning — CUDA 12.8 bitsandbytes workaround).")
