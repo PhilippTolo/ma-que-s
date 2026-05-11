@@ -401,7 +401,7 @@ def main():
     # precision arithmetic amplifies logit magnitudes further.
     model_kwargs = dict(
         trust_remote_code=True,
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,
     )
     model_kwargs["attn_implementation"] = "eager"
     model = AutoModelForCausalLM.from_pretrained(args.model, **model_kwargs)
