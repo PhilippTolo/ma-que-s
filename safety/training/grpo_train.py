@@ -162,6 +162,7 @@ def build_grpo_config(args, max_steps: int) -> GRPOConfig:
         optim="adamw_torch",
         bf16=torch.cuda.is_bf16_supported(),
         fp16=not torch.cuda.is_bf16_supported() and torch.cuda.is_available(),
+        max_grad_norm=1.0,
         gradient_checkpointing=True,
         logging_steps=args.logging_steps,
         save_strategy="steps",
