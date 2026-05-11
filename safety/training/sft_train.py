@@ -371,15 +371,10 @@ def main():
         trust_remote_code=True,
         dtype=torch.bfloat16,
     )
-    # Use Flash Attention 2 if available (A100+)
-    try:
-        model_kwargs["attn_implementation"] = "flash_attention_2"
-        model = AutoModelForCausalLM.from_pretrained(args.model, **model_kwargs)
-        print("  Using Flash Attention 2.")
-    except Exception:
-        model_kwargs.pop("attn_implementation", None)
-        model = AutoModelForCausalLM.from_pretrained(args.model, **model_kwargs)
-        print("  Flash Attention 2 not available, using default attention.")
+    # SDPA is stable in BF16; Flash Attention 2 produces NaN gradients here
+    model_kwargs["attn_implementation"] = "sdpa"
+    model = AutoModelForCausalLM.from_pretrained(args.model, **model_kwargs)
+    print("  Using SDPA attention.")
 
     print(f"  Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M")
 
@@ -428,8 +423,8 @@ def main():
         # Precision
         bf16=torch.cuda.is_bf16_supported(),
         fp16=not torch.cuda.is_bf16_supported() and torch.cuda.is_available(),
-        # Memory
-        gradient_checkpointing=True,
+        # Memory — 1.7B model fits in 40GB without checkpointing; checkpointing + FA2 caused NaN
+        gradient_checkpointing=False,
         # Logging / eval / save
         logging_steps=args.logging_steps,
         eval_strategy="steps",
