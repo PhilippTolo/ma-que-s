@@ -45,6 +45,9 @@ model = AutoModelForCausalLM.from_pretrained(
     "Qwen/Qwen3-1.7B", trust_remote_code=True,
     torch_dtype=torch.bfloat16, attn_implementation="eager"
 ).cuda()
+print("Model weight dtype:", next(model.parameters()).dtype)
+print("Model config vocab_size:", model.config.vocab_size)
+print("Max label token ID:", max(l for l in labels if l != -100))
 
 input_ids_t = torch.tensor([full_ids]).cuda()
 labels_t    = torch.tensor([labels]).cuda()
@@ -72,3 +75,16 @@ per_tok    = F.cross_entropy(logits_2d, labels_1d, ignore_index=-100, reduction=
 valid      = labels_1d != -100
 print(f"\nPer-token losses on response tokens: {per_tok[valid].tolist()}")
 print(f"Mean manual CE loss: {per_tok[valid].mean().item():.4f}")
+
+# ── FP32 comparison ───────────────────────────────────────────────────────────
+print("\n--- FP32 model comparison ---")
+model_fp32 = AutoModelForCausalLM.from_pretrained(
+    "Qwen/Qwen3-1.7B", trust_remote_code=True,
+    attn_implementation="eager"
+).cuda()
+with torch.no_grad():
+    out32 = model_fp32(input_ids=input_ids_t, labels=labels_t)
+print(f"FP32 loss        : {out32.loss.item():.4f}")
+print(f"FP32 logits max  : {out32.logits.max().item():.2f}")
+per_tok32 = F.cross_entropy(out32.logits[0], labels_t[0], ignore_index=-100, reduction="none")
+print(f"FP32 per-token   : {per_tok32[valid].tolist()}")
