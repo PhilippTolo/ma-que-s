@@ -28,13 +28,7 @@ import torch
 from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
 
-REQUIRED_GEN_CONFIG = {
-    "bos_token_id": 151643,
-    "eos_token_id": [151645, 151643],
-    "pad_token_id": 151643,
-    "do_sample": True,
-    "transformers_version": "4.51.0",
-}
+from safety.constants import REQUIRED_GEN_CONFIG
 
 
 def main():

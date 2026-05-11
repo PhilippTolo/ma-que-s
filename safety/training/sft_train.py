@@ -21,7 +21,6 @@ Usage:
 import argparse
 import json
 import os
-import re
 
 import torch
 import torch.nn.functional as F
@@ -37,8 +36,7 @@ from transformers import (
 )
 from trl import SFTConfig, SFTTrainer
 
-# ── Regex for \\boxed{} extraction ───────────────────────────────────────────
-BOXED_RE = re.compile(r"\\boxed\{([^}]+)\}", re.IGNORECASE)
+from safety.utils import extract_boxed
 
 # ── Default LoRA targets for Qwen3 ────────────────────────────────────────────
 QWEN3_LORA_TARGETS = [
@@ -225,10 +223,10 @@ class FormatComplianceCallback(TrainerCallback):
                 new_ids = out_ids[0][inputs["input_ids"].shape[1]:]
                 generated = self.tokenizer.decode(new_ids, skip_special_tokens=True)
 
-                matches = BOXED_RE.findall(generated)
-                if matches:
+                extracted = extract_boxed(generated)
+                if extracted is not None:
                     n_boxed += 1
-                    if matches[-1].strip().upper() == ex.get("answer", "").upper():
+                    if extracted == ex.get("answer", "").upper():
                         n_correct += 1
 
         n = len(self.val_examples)

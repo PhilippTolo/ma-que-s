@@ -220,6 +220,12 @@ def main():
         examples = examples[: args.max_samples]
 
     print(f"  Valid examples: {len(examples):,}")
+    if args.max_samples and len(examples) < args.max_samples * 0.5:
+        print(
+            f"  WARNING: only {len(examples)} examples survived filtering "
+            f"(target {args.max_samples}). Consider increasing --max-samples or "
+            f"the 3× oversampling multiplier in process_dataset."
+        )
     gold_dist = Counter(e["gold_answer"] for e in examples)
     print(f"  Gold answer distribution: {dict(gold_dist)}  (should be ~50/50)")
 

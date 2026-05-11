@@ -20,15 +20,14 @@ Usage:
 
 import argparse
 import json
-import math
-import re
 import sys
 from pathlib import Path
 
+import numpy as np
+
 from vllm import LLM, SamplingParams
 
-
-BOXED_PATTERN = re.compile(r"\\boxed\{([^}]+)\}", re.IGNORECASE)
+from safety.utils import extract_boxed
 
 # Fallback examples used when no --validation-file is provided.
 FALLBACK_EXAMPLES = [
@@ -81,17 +80,10 @@ SYSTEM_PROMPT = (
 # ── pass@k estimator (Chen et al. 2021) ───────────────────────────────────────
 
 def pass_at_k(n: int, c: int, k: int) -> float:
-    """Unbiased pass@k: n total samples, c correct, k tries."""
+    """Unbiased pass@k estimator (Chen et al. 2021), product form (no overflow)."""
     if n - c < k:
         return 1.0
-    return 1.0 - math.comb(n - c, k) / math.comb(n, k)
-
-
-# ── Answer extraction ─────────────────────────────────────────────────────────
-
-def extract_answer(text: str) -> str | None:
-    matches = BOXED_PATTERN.findall(text)
-    return matches[-1].strip().upper() if matches else None
+    return 1.0 - float(np.prod(1.0 - k / np.arange(n - c + 1, n + 1)))
 
 
 # ── Prompt formatting ─────────────────────────────────────────────────────────
@@ -184,7 +176,7 @@ def main():
         completions = [o.text for o in output.outputs]
         total_completions += len(completions)
 
-        extracted = [extract_answer(c) for c in completions]
+        extracted = [extract_boxed(c) for c in completions]
         n_boxed = sum(1 for e in extracted if e is not None)
         n_correct = sum(1 for e in extracted if e == gold)
 

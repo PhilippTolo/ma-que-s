@@ -2,16 +2,16 @@
 Phase 3 — GRPO fine-tuning on PKU-SafeRLHF.
 
 Starts from the merged SFT checkpoint and further trains with Group Relative
-Policy Optimisation using a multiplicative verifiable reward:
+Policy Optimisation using an additive verifiable reward:
 
-    r = r_format * r_accuracy
+    r = 0.5 * r_format + 0.5 * r_accuracy
 
     r_format   = 1  if completion contains \\boxed{A} or \\boxed{B},  else 0
     r_accuracy = 1  if the boxed answer matches gold_answer,           else 0
 
-The multiplicative structure means format compliance is required before any
-accuracy signal can flow — the model cannot earn reward by getting the answer
-right with broken formatting.
+Additive (not multiplicative) so format signal flows even when the model is
+not yet accurate — fully multiplicative rewards collapse to all-zero batches
+early in training (std=0 → NaN GRPO advantage).
 
 Usage:
     # Full run (~2-3 h on one A100)
@@ -29,7 +29,6 @@ import argparse
 import json
 import os
 import random
-import re
 
 import torch
 from datasets import Dataset
@@ -37,10 +36,7 @@ from peft import LoraConfig, TaskType, get_peft_model
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from trl import GRPOConfig, GRPOTrainer
 
-
-# ── Constants ─────────────────────────────────────────────────────────────────
-
-BOXED_RE = re.compile(r"\\boxed\{([^}]+)\}", re.IGNORECASE)
+from safety.utils import extract_boxed
 
 # Must match the system prompt used in prepare_pkusaferlhf.py
 SYSTEM_PROMPT = (
@@ -92,18 +88,19 @@ def to_grpo_dataset(examples: list[dict]) -> Dataset:
 
 def safety_reward(completions: list[str], **kwargs) -> list[float]:
     """
-    r = r_format * r_accuracy  (multiplicative, both must be 1 for any reward).
+    r = 0.5 * r_format + 0.5 * r_accuracy  (additive).
+
+    Additive rather than multiplicative so format signal flows even when the
+    model is not yet accurate — multiplicative rewards collapse to all-zero
+    batches at training start (std=0 → NaN GRPO advantage).
+
+    r_format   = 1.0 if \\boxed{A} or \\boxed{B} present, else 0.0
+    r_accuracy = 1.0 if boxed answer matches gold,         else 0.0
 
     Called by GRPOTrainer with:
         completions : list of generated texts, length = batch_size * num_generations
         kwargs      : dataset columns forwarded verbatim; we use "gold_answer"
-
-    gold_answer is repeated num_generations times for each prompt, so zipping
-    completions with gold_answers pairs each generation with its ground truth.
     """
-    # Fail loudly rather than silently returning zero rewards for every sample.
-    # If gold_answer is missing, training would run for hours with no gradient
-    # signal. The most common cause is remove_unused_columns=True in GRPOConfig.
     if "gold_answer" not in kwargs:
         raise RuntimeError(
             "safety_reward: 'gold_answer' not in kwargs.\n"
@@ -115,12 +112,11 @@ def safety_reward(completions: list[str], **kwargs) -> list[float]:
     rewards = []
 
     for completion, gold in zip(completions, gold_answers):
-        matches = BOXED_RE.findall(completion)
-        extracted = matches[-1].strip().upper() if matches else None
+        extracted = extract_boxed(completion)
 
         r_format   = 1.0 if extracted in ("A", "B") else 0.0
         r_accuracy = 1.0 if (extracted is not None and extracted == str(gold).upper()) else 0.0
-        rewards.append(r_format * r_accuracy)
+        rewards.append(0.5 * r_format + 0.5 * r_accuracy)
 
     return rewards
 
@@ -200,8 +196,9 @@ def parse_args():
     # GRPO-specific
     p.add_argument("--num-generations",    type=int,   default=4,
                    help="Completions per prompt for group advantage (G in the paper)")
-    p.add_argument("--beta",               type=float, default=0.01,
-                   help="KL penalty coefficient — 0 disables KL entirely")
+    p.add_argument("--beta",               type=float, default=0.0,
+                   help="KL penalty coefficient — 0 disables KL entirely (default); "
+                        "if >0 an explicit frozen ref_model is loaded from --sft-checkpoint")
     p.add_argument("--max-completion-length", type=int, default=256,
                    help="Max tokens generated per completion during GRPO rollouts")
     p.add_argument("--temperature",        type=float, default=0.8,
@@ -256,7 +253,7 @@ def main():
     print(f"  Output             : {args.output_dir}")
     print(f"  num_generations    : {args.num_generations}")
     print(f"  beta (KL penalty)  : {args.beta}")
-    print(f"  Reward             : r_format * r_accuracy")
+    print(f"  Reward             : 0.5*r_format + 0.5*r_accuracy")
     print(f"{'='*60}\n")
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -322,6 +319,28 @@ def main():
     model.enable_input_require_grads()
     model.print_trainable_parameters()
 
+    # ── 4b. Reference model ───────────────────────────────────────────────────
+    # With beta=0 (default) KL is disabled — no ref_model needed and none loaded.
+    # With beta>0 we load an explicit frozen copy from the SFT checkpoint rather
+    # than relying on TRL's PeftModel auto-detection (which varies across TRL
+    # versions and could silently compute reference log-probs from the wrong
+    # distribution).
+    ref_model = None
+    if args.beta > 0:
+        print(f"[4b/5] Loading frozen reference model (beta={args.beta})...")
+        ref_model = AutoModelForCausalLM.from_pretrained(
+            args.sft_checkpoint,
+            trust_remote_code=True,
+            torch_dtype=torch.bfloat16,
+            attn_implementation=model_kwargs.get("attn_implementation", "eager"),
+        )
+        ref_model.eval()
+        for p in ref_model.parameters():
+            p.requires_grad_(False)
+        print("  Reference model loaded and frozen.")
+    else:
+        print("[4b/5] beta=0 — KL penalty disabled, no reference model loaded.")
+
     # ── 5. Train ──────────────────────────────────────────────────────────────
     print("[5/5] Building GRPOConfig and training...")
     effective_batch = args.batch_size * args.grad_accum
@@ -331,24 +350,28 @@ def main():
     grpo_config = build_grpo_config(args, max_steps)
 
     # Try processing_class= (TRL >= 0.12); fall back to tokenizer= for older TRL.
-    # eval_dataset is omitted: not all GRPOTrainer versions support it, and reward
-    # metrics logged per step are sufficient to monitor training progress.
-    try:
-        trainer = GRPOTrainer(
+    # eval_dataset is passed where supported; older GRPOTrainer versions ignore it.
+    def _make_trainer(processing_class_kwarg, eval_kwarg):
+        return GRPOTrainer(
             model=model,
+            ref_model=ref_model,      # None → TRL disables KL; explicit model → unambiguous ref
             reward_funcs=[safety_reward],
             args=grpo_config,
             train_dataset=train_ds,
-            processing_class=tokenizer,
+            **processing_class_kwarg,
+            **eval_kwarg,
         )
-    except TypeError:
-        trainer = GRPOTrainer(
-            model=model,
-            reward_funcs=[safety_reward],
-            args=grpo_config,
-            train_dataset=train_ds,
-            tokenizer=tokenizer,
-        )
+
+    for pc_kwargs in ({"processing_class": tokenizer}, {"tokenizer": tokenizer}):
+        for ev_kwargs in ({"eval_dataset": val_ds}, {}):
+            try:
+                trainer = _make_trainer(pc_kwargs, ev_kwargs)
+                break
+            except TypeError:
+                continue
+        else:
+            continue
+        break
 
     trainer.train()
 

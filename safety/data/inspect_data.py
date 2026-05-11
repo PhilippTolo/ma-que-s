@@ -89,7 +89,7 @@ def main():
         print(f"\n  Answer distribution: {dict(sorted(answers.items()))}")
 
     # Boxed check
-    if args.check_boxed or True:
+    if args.check_boxed:
         check_boxed(examples)
 
     # Print examples

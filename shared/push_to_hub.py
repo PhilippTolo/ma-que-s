@@ -17,16 +17,10 @@ import argparse
 import json
 import os
 
+import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
 
-
-REQUIRED_FIELDS = {
-    "bos_token_id": 151643,
-    "eos_token_id": [151645, 151643],
-    "pad_token_id": 151643,
-    "do_sample": True,
-    "transformers_version": "4.51.0",
-}
+from safety.constants import REQUIRED_GEN_CONFIG as REQUIRED_FIELDS
 
 
 def main():
@@ -40,7 +34,9 @@ def main():
     args = parser.parse_args()
 
     print(f"Loading checkpoint from: {args.checkpoint}")
-    model = AutoModelForCausalLM.from_pretrained(args.checkpoint, trust_remote_code=True)
+    model = AutoModelForCausalLM.from_pretrained(
+        args.checkpoint, trust_remote_code=True, torch_dtype=torch.bfloat16
+    )
     tokenizer = AutoTokenizer.from_pretrained(args.checkpoint, trust_remote_code=True)
 
     # Build generation config with all required fields
