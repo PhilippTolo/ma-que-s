@@ -22,7 +22,6 @@ import argparse
 import json
 import os
 import re
-import sys
 
 import torch
 from datasets import Dataset
@@ -30,6 +29,7 @@ from peft import LoraConfig, TaskType
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
+    DataCollatorForSeq2Seq,
     TrainerCallback,
     TrainerControl,
     TrainerState,
@@ -44,6 +44,27 @@ QWEN3_LORA_TARGETS = [
     "q_proj", "k_proj", "v_proj", "o_proj",
     "gate_proj", "up_proj", "down_proj",
 ]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Chat template helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def apply_template(tokenizer, messages, **kwargs) -> str:
+    """
+    Call apply_chat_template with enable_thinking=False when supported.
+
+    Qwen3 is a thinking model: with add_generation_prompt=True its template
+    inserts '<think>\\n' tokens that are NOT present when the assistant turn is
+    pre-filled (add_generation_prompt=False + full messages).  That extra token
+    inflates the measured prompt length and causes TRL's auto-masking to mask
+    assistant tokens as -100, giving loss = 0/0 = NaN.  Disabling thinking
+    mode makes both tokenisations consistent.
+    """
+    try:
+        return tokenizer.apply_chat_template(messages, enable_thinking=False, **kwargs)
+    except TypeError:
+        return tokenizer.apply_chat_template(messages, **kwargs)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -63,8 +84,9 @@ def filter_by_length(
     """Drop examples whose tokenized length exceeds max_seq_length."""
     kept, dropped = [], 0
     for ex in examples:
-        text = tokenizer.apply_chat_template(
-            ex["messages"], tokenize=False, add_generation_prompt=False
+        text = apply_template(
+            tokenizer, ex["messages"],
+            tokenize=False, add_generation_prompt=False
         )
         n_tokens = len(tokenizer.encode(text, add_special_tokens=False))
         if n_tokens <= max_seq_length:
@@ -76,8 +98,65 @@ def filter_by_length(
     return kept
 
 
-def to_hf_dataset(examples: list[dict]) -> Dataset:
-    return Dataset.from_list(examples)
+def preprocess_for_sft(
+    examples: list[dict],
+    tokenizer,
+    max_seq_length: int,
+) -> Dataset:
+    """
+    Tokenize and create labels with explicit masking.
+
+    System + user tokens → label = -100  (masked, not included in loss)
+    Assistant tokens     → label = token_id  (loss computed here)
+
+    We do NOT rely on TRL's auto-masking because it derives prompt length from
+    the prompt-only tokenization (add_generation_prompt=True).  For Qwen3 in
+    thinking mode that injects '<think>\\n' tokens which are absent in the full
+    conversation, causing the split point to be off and assistant tokens to be
+    erroneously masked to -100 → loss = 0/0 = NaN → NaN gradients → corrupted
+    weights.
+    """
+    result: dict[str, list] = {"input_ids": [], "attention_mask": [], "labels": []}
+    skipped = 0
+
+    for ex in examples:
+        messages = ex["messages"]
+
+        full_text   = apply_template(tokenizer, messages,
+                                     tokenize=False, add_generation_prompt=False)
+        prompt_text = apply_template(tokenizer, messages[:-1],
+                                     tokenize=False, add_generation_prompt=True)
+
+        full_ids   = tokenizer(full_text,   add_special_tokens=False)["input_ids"]
+        prompt_ids = tokenizer(prompt_text, add_special_tokens=False)["input_ids"]
+
+        n_prompt = len(prompt_ids)
+
+        if n_prompt >= len(full_ids):
+            # No response tokens after the prompt — skip degenerate example.
+            skipped += 1
+            continue
+
+        labels = [-100] * n_prompt + full_ids[n_prompt:]
+
+        # Truncate to max sequence length
+        full_ids = full_ids[:max_seq_length]
+        labels   = labels[:max_seq_length]
+
+        # Guard: after truncation there must still be at least one valid label.
+        if all(l == -100 for l in labels):
+            skipped += 1
+            continue
+
+        result["input_ids"].append(full_ids)
+        result["attention_mask"].append([1] * len(full_ids))
+        result["labels"].append(labels)
+
+    if skipped:
+        print(f"  [preprocess] Skipped {skipped} examples (no response tokens or all masked).")
+
+    print(f"  [preprocess] {len(result['input_ids'])} examples ready for training.")
+    return Dataset.from_dict(result)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -128,8 +207,9 @@ class FormatComplianceCallback(TrainerCallback):
             for ex in self.val_examples:
                 # Build prompt (system + user only, no assistant turn)
                 chat = ex["messages"][:-1]
-                prompt = self.tokenizer.apply_chat_template(
-                    chat, tokenize=False, add_generation_prompt=True
+                prompt = apply_template(
+                    self.tokenizer, chat,
+                    tokenize=False, add_generation_prompt=True
                 )
                 inputs = self.tokenizer(
                     prompt, return_tensors="pt", truncation=True, max_length=512
@@ -137,7 +217,7 @@ class FormatComplianceCallback(TrainerCallback):
 
                 out_ids = raw_model.generate(
                     **inputs,
-                    max_new_tokens=150,
+                    max_new_tokens=512,   # enough for thinking tokens + boxed answer
                     do_sample=False,
                     pad_token_id=self.tokenizer.pad_token_id,
                 )
@@ -277,14 +357,19 @@ def main():
     val_examples   = filter_by_length(raw_val,   tokenizer, args.max_seq_length)
     print(f"  Train: {len(train_examples):,}  |  Val: {len(val_examples):,}")
 
-    train_ds = to_hf_dataset(train_examples)
-    val_ds   = to_hf_dataset(val_examples)
+    # Pre-tokenize with explicit label masking (system+user → -100, assistant → loss).
+    # This replaces TRL's auto-masking, which breaks for Qwen3: the thinking-mode
+    # template injects <think>\n in the prompt-only tokenization but NOT in the
+    # full-conversation tokenization, causing the split point to be off.
+    print("  Pre-tokenising with explicit label masking...")
+    train_ds = preprocess_for_sft(train_examples, tokenizer, args.max_seq_length)
+    val_ds   = preprocess_for_sft(val_examples,   tokenizer, args.max_seq_length)
 
     # ── Model ─────────────────────────────────────────────────────────────────
     print("[3/6] Loading model...")
     model_kwargs = dict(
         trust_remote_code=True,
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,
     )
     # Use Flash Attention 2 if available (A100+)
     try:
@@ -310,10 +395,6 @@ def main():
             lora_dropout=args.lora_dropout,
             bias="none",
         )
-        trainable = sum(
-            p.numel() for p in model.parameters() if p.requires_grad
-        )
-        # Note: actual trainable count printed by TRL after trainer init
         print(f"  LoRA r={args.lora_r}, alpha={args.lora_alpha}, "
               f"targets={QWEN3_LORA_TARGETS}")
     else:
@@ -331,8 +412,6 @@ def main():
 
     sft_config = SFTConfig(
         output_dir=args.output_dir,
-        # Sequence length
-        max_length=args.max_seq_length,
         # Epochs / steps
         num_train_epochs=args.epochs,
         max_steps=max_steps,
@@ -358,17 +437,26 @@ def main():
         save_strategy="steps",
         save_steps=args.save_steps,
         save_total_limit=3,
-        load_best_model_at_end=True,   # keeps best eval-loss checkpoint, not just final
+        load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
         greater_is_better=False,
-        # Dataset — only compute loss on assistant turns
-        completion_only_loss=True,
-        remove_unused_columns=False,
-        dataset_kwargs={"skip_prepare_dataset": False},
+        # Dataset — data is already tokenized; tell TRL to skip its prepare step
+        remove_unused_columns=True,
+        dataset_kwargs={"skip_prepare_dataset": True},
         # Misc
         seed=args.seed,
         report_to=args.report_to,
         run_name="safety-sft",
+    )
+
+    # ── Collator ──────────────────────────────────────────────────────────────
+    # DataCollatorForSeq2Seq pads input_ids (pad_token_id), attention_mask (0),
+    # and labels (-100) to the longest sequence in each batch.
+    data_collator = DataCollatorForSeq2Seq(
+        tokenizer=tokenizer,
+        padding=True,
+        label_pad_token_id=-100,
+        pad_to_multiple_of=8,
     )
 
     # ── Trainer ───────────────────────────────────────────────────────────────
@@ -390,6 +478,7 @@ def main():
             eval_dataset=val_ds,
             processing_class=tokenizer,
             peft_config=peft_config,
+            data_collator=data_collator,
             callbacks=[format_callback],
         )
     except TypeError:
@@ -401,6 +490,7 @@ def main():
             eval_dataset=val_ds,
             tokenizer=tokenizer,
             peft_config=peft_config,
+            data_collator=data_collator,
             callbacks=[format_callback],
         )
 
