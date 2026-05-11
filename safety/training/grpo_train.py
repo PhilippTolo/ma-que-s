@@ -112,26 +112,6 @@ def safety_reward(completions: list[str], **kwargs) -> list[float]:
     gold_answers = kwargs["gold_answer"]
     rewards = []
 
-    # One-time debug: print the raw structure of the first completion so we can
-    # verify text extraction is working correctly.
-    if not getattr(safety_reward, "_debug_done", False):
-        safety_reward._debug_done = True
-        c0 = completions[0]
-        print(f"\n[DEBUG reward] completions[0] type={type(c0).__name__}  "
-              f"len(completions)={len(completions)}  len(gold_answers)={len(gold_answers)}")
-        if isinstance(c0, list):
-            print(f"  list len={len(c0)}, element types={[type(x).__name__ for x in c0[:3]]}")
-            for i, item in enumerate(c0[:3]):
-                if isinstance(item, dict):
-                    print(f"  [{i}] keys={list(item.keys())}  "
-                          f"content={str(item.get('content',''))[:200]!r}")
-                else:
-                    print(f"  [{i}] {str(item)[:200]!r}")
-        else:
-            print(f"  value={str(c0)[:300]!r}")
-        print(f"  gold_answers[:4]={gold_answers[:4]!r}")
-        print()
-
     for completion, gold in zip(completions, gold_answers):
         # TRL >= 1.0 passes completions as lists of message dicts;
         # older TRL passes plain strings. Handle both.
@@ -295,7 +275,7 @@ def main():
     # ── 1. Tokenizer ──────────────────────────────────────────────────────────
     print("[1/5] Loading tokenizer from SFT checkpoint...")
     tokenizer = AutoTokenizer.from_pretrained(
-        args.sft_checkpoint, trust_remote_code=True, local_files_only=True
+        args.sft_checkpoint, trust_remote_code=True
     )
     # Left-padding is standard for generation-heavy training loops
     tokenizer.padding_side = "left"
