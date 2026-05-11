@@ -193,6 +193,8 @@ def parse_args():
     p.add_argument("--lora-r",       type=int,   default=16)
     p.add_argument("--lora-alpha",   type=int,   default=32)
     p.add_argument("--lora-dropout", type=float, default=0.05)
+    p.add_argument("--no-lora", action="store_true",
+                   help="Skip LoRA and do full fine-tuning (required on CUDA 12.8 — bitsandbytes incompatible)")
 
     # GRPO-specific
     p.add_argument("--num-generations",    type=int,   default=4,
@@ -303,22 +305,28 @@ def main():
     print(f"  Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M")
 
     # ── 4. LoRA ───────────────────────────────────────────────────────────────
-    print("[4/5] Applying LoRA to SFT model...")
-    peft_config = LoraConfig(
-        task_type=TaskType.CAUSAL_LM,
-        r=args.lora_r,
-        lora_alpha=args.lora_alpha,
-        target_modules=QWEN3_LORA_TARGETS,
-        lora_dropout=args.lora_dropout,
-        bias="none",
-    )
-    model = get_peft_model(model, peft_config)
-
-    # Required for gradient checkpointing with PEFT: frozen embedding layers
-    # don't have gradients, which breaks the checkpoint backward pass unless
-    # we explicitly enable input gradients.
-    model.enable_input_require_grads()
-    model.print_trainable_parameters()
+    if args.no_lora:
+        print("[4/5] Skipping LoRA (full fine-tuning — CUDA 12.8 bitsandbytes workaround).")
+        model.enable_input_require_grads()
+        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        total = sum(p.numel() for p in model.parameters())
+        print(f"  trainable params: {trainable:,} || all params: {total:,} || trainable%: {100*trainable/total:.4f}")
+    else:
+        print("[4/5] Applying LoRA to SFT model...")
+        peft_config = LoraConfig(
+            task_type=TaskType.CAUSAL_LM,
+            r=args.lora_r,
+            lora_alpha=args.lora_alpha,
+            target_modules=QWEN3_LORA_TARGETS,
+            lora_dropout=args.lora_dropout,
+            bias="none",
+        )
+        model = get_peft_model(model, peft_config)
+        # Required for gradient checkpointing with PEFT: frozen embedding layers
+        # don't have gradients, which breaks the checkpoint backward pass unless
+        # we explicitly enable input gradients.
+        model.enable_input_require_grads()
+        model.print_trainable_parameters()
 
     # ── 4b. Reference model ───────────────────────────────────────────────────
     # With beta=0 (default) KL is disabled — no ref_model needed and none loaded.
@@ -377,16 +385,25 @@ def main():
     trainer.train()
 
     # ── Save ──────────────────────────────────────────────────────────────────
-    adapter_dir = os.path.join(args.output_dir, "lora_adapter")
-    trainer.save_model(adapter_dir)
-    tokenizer.save_pretrained(adapter_dir)
-    print(f"\nLoRA adapter saved to: {adapter_dir}")
-    print(
-        f"Next step: python merge_lora.py"
-        f" --adapter {adapter_dir}"
-        f" --base {args.sft_checkpoint}"
-        f" --output {os.path.join(args.output_dir, 'merged')}"
-    )
+    save_dir = os.path.join(args.output_dir, "lora_adapter")
+    trainer.save_model(save_dir)
+    tokenizer.save_pretrained(save_dir)
+    if args.no_lora:
+        print(f"\nFull model saved to: {save_dir}")
+        print(
+            f"Next step (no merge needed — full model):\n"
+            f"  python ../../shared/push_to_hub.py \\\n"
+            f"      --checkpoint {save_dir} \\\n"
+            f"      --repo-id <your-hf-user>/cs552-safety-individual"
+        )
+    else:
+        print(f"\nLoRA adapter saved to: {save_dir}")
+        print(
+            f"Next step: python merge_lora.py"
+            f" --adapter {save_dir}"
+            f" --base {args.sft_checkpoint}"
+            f" --output {os.path.join(args.output_dir, 'merged')}"
+        )
 
 
 if __name__ == "__main__":
