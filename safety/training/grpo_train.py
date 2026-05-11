@@ -359,28 +359,43 @@ def main():
     grpo_config = build_grpo_config(args, max_steps)
 
     # Try processing_class= (TRL >= 0.12); fall back to tokenizer= for older TRL.
+    # ref_model is only passed when explicitly loaded (beta>0); TRL 1.3.0 removed
+    # the ref_model parameter from GRPOTrainer — passing None causes TypeError.
     # eval_dataset is passed where supported; older GRPOTrainer versions ignore it.
-    def _make_trainer(processing_class_kwarg, eval_kwarg):
+    def _make_trainer(processing_class_kwarg, eval_kwarg, ref_kwarg):
         return GRPOTrainer(
             model=model,
-            ref_model=ref_model,      # None → TRL disables KL; explicit model → unambiguous ref
             reward_funcs=[safety_reward],
             args=grpo_config,
             train_dataset=train_ds,
+            **ref_kwarg,
             **processing_class_kwarg,
             **eval_kwarg,
         )
 
-    for pc_kwargs in ({"processing_class": tokenizer}, {"tokenizer": tokenizer}):
-        for ev_kwargs in ({"eval_dataset": val_ds}, {}):
-            try:
-                trainer = _make_trainer(pc_kwargs, ev_kwargs)
-                break
-            except TypeError:
+    ref_kwargs_options = (
+        ({"ref_model": ref_model},) if ref_model is not None else ({},)
+    )
+    trainer = None
+    for ref_kw in ref_kwargs_options:
+        for pc_kwargs in ({"processing_class": tokenizer}, {"tokenizer": tokenizer}):
+            for ev_kwargs in ({"eval_dataset": val_ds}, {}):
+                try:
+                    trainer = _make_trainer(pc_kwargs, ev_kwargs, ref_kw)
+                    break
+                except TypeError:
+                    continue
+            else:
                 continue
-        else:
-            continue
-        break
+            break
+        if trainer is not None:
+            break
+
+    if trainer is None:
+        raise RuntimeError(
+            "GRPOTrainer construction failed for all argument combinations. "
+            "Check TRL version compatibility."
+        )
 
     trainer.train()
 
