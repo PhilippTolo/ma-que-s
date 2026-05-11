@@ -239,6 +239,11 @@ def main():
         args.logging_steps = 5
         print("[quick-test] Running for 20 steps only.")
 
+    # Full fine-tuning needs a much lower LR than LoRA
+    if args.no_lora and args.lr == 1e-4:
+        args.lr = 2e-5
+        print(f"[no-lora] LR auto-adjusted to {args.lr} (LoRA default 1e-4 is too high for full FT)")
+
     print(f"\n{'='*60}")
     print(f"  SFT Training — Safety Model")
     print(f"  Base model : {args.model}")
@@ -356,7 +361,8 @@ def main():
         load_best_model_at_end=True,   # keeps best eval-loss checkpoint, not just final
         metric_for_best_model="eval_loss",
         greater_is_better=False,
-        # Dataset
+        # Dataset — only compute loss on assistant turns
+        completion_only_loss=True,
         remove_unused_columns=False,
         dataset_kwargs={"skip_prepare_dataset": False},
         # Misc
