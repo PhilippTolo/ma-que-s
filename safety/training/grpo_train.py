@@ -29,14 +29,33 @@ import argparse
 import json
 import os
 import random
+import sys
 
 import torch
 from datasets import Dataset
+
+# bitsandbytes is not compiled for CUDA 12.8 and raises RuntimeError on import.
+# PEFT imports it unconditionally, but standard LoRA never calls any bitsandbytes
+# functions — so substituting a MagicMock is safe for our use case.
+if "bitsandbytes" not in sys.modules:
+    try:
+        import bitsandbytes  # noqa: F401
+    except (RuntimeError, ImportError):
+        from unittest.mock import MagicMock as _M
+        for _mod in (
+            "bitsandbytes", "bitsandbytes.nn", "bitsandbytes.optim",
+            "bitsandbytes.functional", "bitsandbytes.cuda_setup",
+            "bitsandbytes.autograd", "bitsandbytes.nn.modules",
+            "bitsandbytes.utils",
+        ):
+            sys.modules[_mod] = _M()
+        print("[bnb-mock] bitsandbytes unavailable; mocked so PEFT LoRA can load.")
+
 from peft import LoraConfig, TaskType, get_peft_model
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from trl import GRPOConfig, GRPOTrainer
 
-import sys; sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 from safety.utils import extract_boxed
 
 # Must match the system prompt used in prepare_pkusaferlhf.py
@@ -225,8 +244,8 @@ def parse_args():
                    help="Per-device batch (GRPO is memory-heavier than SFT)")
     p.add_argument("--grad-accum",  type=int,   default=8,
                    help="Effective batch = batch_size * grad_accum = 8")
-    p.add_argument("--lr",          type=float, default=5e-6,
-                   help="Lower LR than SFT — GRPO is more sensitive to large updates")
+    p.add_argument("--lr",          type=float, default=2e-4,
+                   help="LoRA GRPO: ~2e-4; full-FT GRPO: ~5e-6 (pass --no-lora to use full FT)")
     p.add_argument("--warmup-ratio", type=float, default=0.05)
     p.add_argument("--max-samples", type=int,   default=15_000,
                    help="Cap training examples before the epoch; 15k matches proposal target")
