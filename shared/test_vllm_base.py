@@ -117,6 +117,8 @@ def main():
     parser.add_argument("--top-k", type=int, default=20)
     parser.add_argument("--n-completions", type=int, default=8,
                         help="Completions per prompt (8 = CI setting for pass@8)")
+    parser.add_argument("--gpu-memory-utilization", type=float, default=0.90,
+                        help="Fraction of GPU memory vLLM may use (lower if OOM)")
     args = parser.parse_args()
 
     print(f"\n{'='*60}")
@@ -139,7 +141,8 @@ def main():
     # ── 1. Load model ──────────────────────────────────────────────────────────
     print("[1/3] Loading model with vLLM...")
     try:
-        llm = LLM(model=args.model, trust_remote_code=True)
+        llm = LLM(model=args.model, trust_remote_code=True,
+                  gpu_memory_utilization=args.gpu_memory_utilization)
         tokenizer = llm.get_tokenizer()
         print("      OK — model loaded.\n")
     except Exception as e:
