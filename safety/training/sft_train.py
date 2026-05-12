@@ -309,8 +309,8 @@ def parse_args():
     p.add_argument("--batch-size",     type=int,   default=8,
                    help="Per-device train batch size")
     p.add_argument("--grad-accum",     type=int,   default=4)
-    p.add_argument("--lr",             type=float, default=1e-4,
-                   help="LoRA LR — ~10x full fine-tuning LR per 'LoRA Without Regret'")
+    p.add_argument("--lr",             type=float, default=2e-5,
+                   help="LoRA LR — conservative default to avoid mode collapse on short repetitive outputs")
     p.add_argument("--warmup-ratio",   type=float, default=0.05)
     p.add_argument("--max-seq-length", type=int,   default=1024)
     p.add_argument("--weight-decay",   type=float, default=0.01)
@@ -393,6 +393,16 @@ def main():
     tokenizer.padding_side = "right"
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+
+    # Patch chat_template to force enable_thinking=false.
+    # Must match what merge_lora.py bakes into the merged checkpoint — if training
+    # uses thinking=ON (default) but inference uses thinking=OFF, the model sees a
+    # different generation prompt context and produces garbage at inference time.
+    _THINKING_OVERRIDE = "{%- set enable_thinking = false %}"
+    if tokenizer.chat_template and _THINKING_OVERRIDE not in tokenizer.chat_template:
+        tokenizer.chat_template = _THINKING_OVERRIDE + "\n" + tokenizer.chat_template
+        print("  Patched chat_template: enable_thinking=false")
+
     print(f"  Vocab size: {tokenizer.vocab_size:,}  |  pad_token: {tokenizer.pad_token!r}")
 
     # ── Data ──────────────────────────────────────────────────────────────────
