@@ -23,12 +23,37 @@ Usage:
 import argparse
 import json
 import os
+import sys
+
+# bitsandbytes is incompatible with CUDA 12.8 on this cluster; mock it before
+# peft imports it so PEFT falls back to standard (non-quantized) LoRA layers.
+if "bitsandbytes" not in sys.modules:
+    try:
+        import bitsandbytes  # noqa: F401
+    except (RuntimeError, ImportError):
+        import types as _types
+        import importlib.machinery as _im
+        from unittest.mock import MagicMock as _M
+        def _bnb_mod(name: str):
+            m = _types.ModuleType(name)
+            m.__spec__ = _im.ModuleSpec(name, loader=None)
+            m.__version__ = "0.41.0"
+            m.__getattr__ = lambda attr: _M()
+            return m
+        for _mod_name in (
+            "bitsandbytes", "bitsandbytes.nn", "bitsandbytes.nn.modules",
+            "bitsandbytes.functional", "bitsandbytes.optim",
+            "bitsandbytes.cuda_setup", "bitsandbytes.cuda_setup.main",
+            "bitsandbytes.research", "bitsandbytes.research.nn",
+            "bitsandbytes.cextension",
+        ):
+            sys.modules[_mod_name] = _bnb_mod(_mod_name)
 
 import torch
 from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
 
-import sys; sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 from safety.constants import REQUIRED_GEN_CONFIG
 
 
