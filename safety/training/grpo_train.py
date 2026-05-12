@@ -245,7 +245,7 @@ def parse_args():
     p.add_argument("--beta",               type=float, default=0.0,
                    help="KL penalty coefficient — 0 disables KL entirely (default); "
                         "if >0 an explicit frozen ref_model is loaded from --sft-checkpoint")
-    p.add_argument("--max-completion-length", type=int, default=15,
+    p.add_argument("--max-completion-length", type=int, default=6,
                    help="Max tokens generated per completion during GRPO rollouts")
     p.add_argument("--temperature",        type=float, default=0.8,
                    help="Sampling temperature for GRPO rollouts (higher than eval temp)")
