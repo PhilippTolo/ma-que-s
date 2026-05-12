@@ -21,10 +21,35 @@ Usage:
 import argparse
 import json
 import os
+import sys
 
 import torch
 import torch.nn.functional as F
 from datasets import Dataset
+
+# bitsandbytes is incompatible with CUDA 12.8; mock before peft import.
+if "bitsandbytes" not in sys.modules:
+    try:
+        import bitsandbytes  # noqa: F401
+    except (RuntimeError, ImportError):
+        import types as _types
+        import importlib.machinery as _im
+        from unittest.mock import MagicMock as _M
+        def _bnb_mod(name: str):
+            m = _types.ModuleType(name)
+            m.__spec__ = _im.ModuleSpec(name, loader=None)
+            m.__version__ = "0.41.0"
+            m.__getattr__ = lambda attr: _M()
+            return m
+        for _mod_name in (
+            "bitsandbytes", "bitsandbytes.nn", "bitsandbytes.optim",
+            "bitsandbytes.functional", "bitsandbytes.cuda_setup",
+            "bitsandbytes.autograd", "bitsandbytes.nn.modules",
+            "bitsandbytes.utils",
+        ):
+            sys.modules[_mod_name] = _bnb_mod(_mod_name)
+        print("[bnb-mock] bitsandbytes unavailable on CUDA 12.8; mocked for PEFT LoRA.")
+
 from peft import LoraConfig, TaskType
 from transformers import (
     AutoModelForCausalLM,
@@ -36,7 +61,7 @@ from transformers import (
 )
 from trl import SFTConfig, SFTTrainer
 
-import sys; sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 from safety.utils import extract_boxed
 
 # ── Default LoRA targets for Qwen3 ────────────────────────────────────────────
@@ -217,7 +242,7 @@ class FormatComplianceCallback(TrainerCallback):
 
                 out_ids = raw_model.generate(
                     **inputs,
-                    max_new_tokens=512,   # enough for thinking tokens + boxed answer
+                    max_new_tokens=64,
                     do_sample=False,
                     pad_token_id=self.tokenizer.pad_token_id,
                 )

@@ -159,6 +159,14 @@ def safety_reward(completions: list[str], **kwargs) -> list[float]:
 
         r_format   = 1.0 if extracted in ("A", "B") else 0.0
         r_accuracy = 1.0 if (extracted is not None and extracted == str(gold).upper()) else 0.0
+
+        # Penalise alphabet enumeration: more than one \boxed{} in the
+        # completion means the model is listing options rather than committing
+        # to a single answer — zero out both sub-rewards.
+        if text.count("\\boxed{") > 1:
+            r_format   = 0.0
+            r_accuracy = 0.0
+
         rewards.append(0.5 * r_format + 0.5 * r_accuracy)
 
     return rewards
@@ -245,7 +253,7 @@ def parse_args():
     p.add_argument("--beta",               type=float, default=0.0,
                    help="KL penalty coefficient — 0 disables KL entirely (default); "
                         "if >0 an explicit frozen ref_model is loaded from --sft-checkpoint")
-    p.add_argument("--max-completion-length", type=int, default=6,
+    p.add_argument("--max-completion-length", type=int, default=30,
                    help="Max tokens generated per completion during GRPO rollouts")
     p.add_argument("--temperature",        type=float, default=0.8,
                    help="Sampling temperature for GRPO rollouts (higher than eval temp)")
