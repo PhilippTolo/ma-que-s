@@ -181,6 +181,8 @@ def main():
         gold = str(ex.get("answer", "")).strip().upper()
         completions = [o.text for o in output.outputs]
         total_completions += len(completions)
+        if i == 0:
+            print(f"  [DEBUG] Q01 first completion repr:\n  {repr(completions[0][:300])}\n")
 
         extracted = [extract_boxed(c) for c in completions]
         n_boxed = sum(1 for e in extracted if e is not None)
