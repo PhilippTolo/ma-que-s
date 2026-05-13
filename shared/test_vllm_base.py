@@ -91,12 +91,23 @@ def pass_at_k(n: int, c: int, k: int) -> float:
 
 # ── Prompt formatting ─────────────────────────────────────────────────────────
 
+def _user_content(ex: dict) -> str:
+    """Support both GRPO format (prompt key) and SFT format (messages list)."""
+    if "prompt" in ex:
+        return ex["prompt"]
+    # SFT format: messages = [system, user, assistant] — take the user turn
+    for msg in ex.get("messages", []):
+        if msg.get("role") == "user":
+            return msg["content"]
+    raise KeyError(f"Cannot find user content in example: {list(ex.keys())}")
+
+
 def build_prompts(tokenizer, examples: list[dict]) -> list[str]:
     return [
         tokenizer.apply_chat_template(
             [
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": ex["prompt"]},
+                {"role": "user", "content": _user_content(ex)},
             ],
             tokenize=False,
             add_generation_prompt=True,
