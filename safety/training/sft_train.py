@@ -287,8 +287,8 @@ class FormatComplianceCallback(TrainerCallback):
 def parse_args():
     p = argparse.ArgumentParser()
     # Data
-    p.add_argument("--train", required=True, help="Path to safetybench_train.jsonl")
-    p.add_argument("--val",   required=True, help="Path to safetybench_val.jsonl")
+    p.add_argument("--train", required=True, nargs='+', help="One or more training JSONL files (concatenated)")
+    p.add_argument("--val",   required=True, help="Path to val JSONL file")
 
     # Model
     p.add_argument("--model", default="Qwen/Qwen3-1.7B",
@@ -379,7 +379,7 @@ def main():
     print(f"\n{'='*60}")
     print(f"  SFT Training — Safety Model")
     print(f"  Base model : {args.model}")
-    print(f"  Train data : {args.train}")
+    print(f"  Train data : {', '.join(args.train)}")
     print(f"  Val data   : {args.val}")
     print(f"  Output     : {args.output_dir}")
     print(f"  LoRA       : {'disabled' if args.no_lora else f'r={args.lora_r}, alpha={args.lora_alpha}'}")
@@ -407,7 +407,7 @@ def main():
 
     # ── Data ──────────────────────────────────────────────────────────────────
     print("[2/6] Loading and filtering data...")
-    raw_train = load_jsonl(args.train)
+    raw_train = [ex for path in args.train for ex in load_jsonl(path)]
     raw_val   = load_jsonl(args.val)
 
     # For quick test, shrink data
