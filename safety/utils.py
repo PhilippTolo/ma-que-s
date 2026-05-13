@@ -2,7 +2,7 @@
 
 import re
 
-BOXED_RE = re.compile(r"\\boxed\{([^}]+)\}", re.IGNORECASE)
+BOXED_RE = re.compile(r"\\boxed\{+([^}]+?)\}+", re.IGNORECASE)
 
 
 def extract_boxed(text: str) -> str | None:
